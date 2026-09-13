@@ -1,10 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 const unsigned char HEADER[] = {0xFF, 0xD8, 0xFF};  // JPEG start
 const unsigned char FOOTER[] = {0xFF, 0xD9};        // JPEG end
 long files_carved = 0;
+
+bool has_jpeg_marker(unsigned char next_byte)
+{
+    return next_byte >= 0xE0 && next_byte <= 0xEF;
+}
 
 int main (int argc, char *argv[])
 {
@@ -26,9 +32,9 @@ int main (int argc, char *argv[])
 
     while ((bytes_read = fread(buffer, sizeof(char), 1024, input_file)) > 0)
     {
-        for (size_t i = 0; i < bytes_read - 2; i++)
+        for (size_t i = 0; i < bytes_read - 3; i++)
         {
-            if (memcmp(&buffer[i], HEADER, 3) == 0)
+            if (memcmp(&buffer[i], HEADER, 3) == 0 && has_jpeg_marker(buffer[i + 3]))
             {
                 printf("Found JPEG header at offset: %lu\n", ftell(input_file) - bytes_read + i);
                 header_offset = ftell(input_file) - bytes_read + i;
@@ -46,7 +52,7 @@ int main (int argc, char *argv[])
 
                     fseeko(input_file, header_offset, SEEK_SET);
                     header_offset = -1;
-                    
+
                     unsigned long file_bytes = 0;
                     while ( ftell(input_file) != footer_offset + 2)
                     {
