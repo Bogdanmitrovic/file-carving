@@ -32,7 +32,7 @@ int main (int argc, char *argv[])
 
     while ((bytes_read = fread(buffer, sizeof(char), 4096, input_file)) > 0)
     {
-        for (size_t i = 0; i < bytes_read - 3; i++)
+        for (size_t i = 0; i + 3 < bytes_read; i++)
         {
             if (memcmp(&buffer[i], HEADER, 3) == 0 && has_jpeg_marker(buffer[i + 3]))
             {
