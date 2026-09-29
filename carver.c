@@ -77,11 +77,25 @@ int main (int argc, char *argv[])
                         if (bytes_to_read - bytes_copied < (long)chunk) {
                             chunk = bytes_to_read - bytes_copied;
                         }
-                        fread(copy_buffer, 1, chunk, input_file);
-                        fwrite(copy_buffer, 1, chunk, output_file);
-                        bytes_copied += chunk;
+                        size_t got = fread(copy_buffer, 1, chunk, input_file);
+                        if (got == 0)
+                        {
+                            fprintf(stderr, "Read failed at offset %ld while carving %s\n",
+                                    header_offset + bytes_copied, output_filename);
+                            break;
+                        }
+                        if (fwrite(copy_buffer, 1, got, output_file) != got)
+                        {
+                            perror(output_filename);
+                            break;
+                        }
+                        bytes_copied += got;
                     }
-                    fclose(output_file);
+                    if (fclose(output_file) != 0)
+                        perror(output_filename);
+                    if (bytes_copied < bytes_to_read)
+                        fprintf(stderr, "Warning: %s is incomplete (%ld of %ld bytes)\n",
+                                output_filename, bytes_copied, bytes_to_read);
                     printf("Carved %ld bytes to %s\n", bytes_copied, output_filename);
 
                     header_offset = -1;
