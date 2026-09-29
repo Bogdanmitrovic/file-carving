@@ -32,18 +32,20 @@ int main (int argc, char *argv[])
 
     while ((bytes_read = fread(buffer, sizeof(char), 4096, input_file)) > 0)
     {
+        long chunk_start = ftell(input_file) - (long)bytes_read;
+
         for (size_t i = 0; i + 3 < bytes_read; i++)
         {
             if (memcmp(&buffer[i], HEADER, 3) == 0 && has_jpeg_marker(buffer[i + 3]))
             {
-                header_offset = ftell(input_file) - bytes_read + i;
+                header_offset = chunk_start + (long)i;
                 printf("Found JPEG header at offset: %ld\n", header_offset);
             }
             else if (memcmp(&buffer[i], FOOTER, 2) == 0)
             {
-                long footer_offset = ftell(input_file) - bytes_read + i;
-                
-                if (header_offset != -1)
+                long footer_offset = chunk_start + (long)i;
+
+                if (header_offset != -1 && footer_offset > header_offset)
                 {
                     printf("Carving JPEG from offset %ld to %ld\n", header_offset, footer_offset + 2);
                     char output_filename[256];
@@ -54,10 +56,10 @@ int main (int argc, char *argv[])
                     long bytes_copied = 0;
 
                     fseek(input_file, header_offset, SEEK_SET);
-                    
+
                     while (bytes_copied < bytes_to_read) {
                         size_t chunk = sizeof(copy_buffer);
-                        if (bytes_to_read - bytes_copied < chunk) {
+                        if (bytes_to_read - bytes_copied < (long)chunk) {
                             chunk = bytes_to_read - bytes_copied;
                         }
                         fread(copy_buffer, 1, chunk, input_file);
@@ -66,12 +68,16 @@ int main (int argc, char *argv[])
                     }
                     fclose(output_file);
                     printf("Carved %ld bytes to %s\n", bytes_copied, output_filename);
-                    
+
                     header_offset = -1;
-                    fseek(input_file, footer_offset + 2, SEEK_SET);
+                    fseek(input_file, chunk_start + (long)bytes_read, SEEK_SET);
                 }
             }
         }
+
+        if (bytes_read <= 3)
+            break;
+        fseek(input_file, chunk_start + (long)bytes_read - 3, SEEK_SET);
     }
 
     free(buffer);
