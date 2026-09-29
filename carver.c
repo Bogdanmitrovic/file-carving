@@ -27,6 +27,12 @@ int main (int argc, char *argv[])
     }
 
     unsigned char* buffer = malloc(4096);
+    if (!buffer)
+    {
+        perror("Error allocating buffer");
+        fclose(input_file);
+        return 1;
+    }
     unsigned long bytes_read;
     long header_offset = -1;
 
@@ -51,6 +57,15 @@ int main (int argc, char *argv[])
                     char output_filename[256];
                     snprintf(output_filename, sizeof(output_filename), "%s/carved_%ld.jpg", argv[2], files_carved++);
                     FILE* output_file = fopen(output_filename, "wb");
+
+                    if (!output_file)
+                    {
+                        perror(output_filename);
+                        free(buffer);
+                        fclose(input_file);
+                        return 1;
+                    }
+
                     long bytes_to_read = (footer_offset + 2) - header_offset;
                     unsigned char copy_buffer[4096];
                     long bytes_copied = 0;
