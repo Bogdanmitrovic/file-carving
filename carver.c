@@ -1,4 +1,3 @@
-#define _FILE_OFFSET_BITS 64
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,13 +5,48 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <ctype.h>
 
+#define OVERLAP 8
 #define CHUNK_SIZE 4096
+#define MAX_PNG_SIZE (256LL * 1024 * 1024)
 
-const unsigned char HEADER[] = {0xFF, 0xD8, 0xFF};  // JPEG start
-const unsigned char FOOTER[] = {0xFF, 0xD9};        // JPEG end
+const unsigned char JPG_HEADER[] = {0xFF, 0xD8, 0xFF};  // JPEG start
+const unsigned char JPG_FOOTER[] = {0xFF, 0xD9};        // JPEG end
+const unsigned char PNG_SIG[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};  // PNG signature
 long files_carved = 0;
 
+static bool png_walk(int fd, off_t start, off_t *end)
+{
+    off_t pos = start + 8;
+    unsigned char hdr[8];
+    bool first = true;
+
+    while (pos - start < MAX_PNG_SIZE)
+    {
+        if (pread(fd, hdr, 8, pos) != 8)
+            return false;
+
+        uint32_t len = ((uint32_t)hdr[0] << 24) | ((uint32_t)hdr[1] << 16) |
+                       ((uint32_t)hdr[2] << 8)  |  (uint32_t)hdr[3];
+        if (len > 0x7FFFFFFF)
+            return false;
+        for (int k = 4; k < 8; k++)
+            if (!isalpha(hdr[k]))
+                return false;
+        if (first && memcmp(&hdr[4], "IHDR", 4) != 0)
+            return false;
+        first = false;
+
+        pos += 8 + (off_t)len + 4;
+        if (memcmp(&hdr[4], "IEND", 4) == 0)
+        {
+            *end = pos;
+            return true;
+        }
+    }
+    return false;
+}
 
 static off_t app_segments_end(int fd, off_t start)
 {
@@ -35,10 +69,10 @@ static off_t app_segments_end(int fd, off_t start)
     }
 }
 
-static off_t carve(int fd, off_t start, off_t end, const char *out_dir, long index)
+static off_t carve(int fd, off_t start, off_t end, const char *out_dir, long index, const char *ext)
 {
     char output_filename[256];
-    snprintf(output_filename, sizeof(output_filename), "%s/carved_%ld.jpg", out_dir, index);
+    snprintf(output_filename, sizeof(output_filename), "%s/carved_%ld.%s", out_dir, index, ext);
     FILE* output_file = fopen(output_filename, "wb");
     if (!output_file)
     {
@@ -114,12 +148,30 @@ int main (int argc, char *argv[])
     {
         off_t chunk_start = pos;
 
-        for (ssize_t i = 0; i + 3 < bytes_read; i++)
+        for (ssize_t i = 0; i + OVERLAP <= bytes_read; i++)
         {
             off_t abs_pos = chunk_start + i;
             if (abs_pos < skip_until)
                 continue;
-            if (memcmp(&buffer[i], HEADER, 3) == 0 && has_jpeg_marker(buffer[i + 3]))
+            if (memcmp(&buffer[i], PNG_SIG, sizeof PNG_SIG) == 0)
+            {
+                off_t png_end;
+                if (!png_walk(fd, abs_pos, &png_end))
+                {
+                    printf("Ignoring PNG header at %lld (unexpected structure)\n", (long long)abs_pos);
+                    continue;
+                }
+                printf("Found PNG at %lld..%lld\n", (long long)abs_pos, (long long)png_end);
+                if (carve(fd, abs_pos, png_end, argv[2], files_carved, "png") < 0)
+                {
+                    free(buffer);
+                    close(fd);
+                    return 1;
+                }
+                files_carved++;
+                skip_until = png_end;
+            }
+            else if (memcmp(&buffer[i], JPG_HEADER, 3) == 0 && has_jpeg_marker(buffer[i + 3]))
             {
                 off_t app_end = app_segments_end(fd, abs_pos);
                 if (app_end < 0)
@@ -131,7 +183,7 @@ int main (int argc, char *argv[])
                 skip_until = app_end;
                 printf("Found JPEG header at offset: %lld\n", (long long)header_offset);
             }
-            else if (memcmp(&buffer[i], FOOTER, 2) == 0)
+            else if (memcmp(&buffer[i], JPG_FOOTER, 2) == 0)
             {
                 off_t footer_offset = abs_pos;
 
@@ -139,7 +191,7 @@ int main (int argc, char *argv[])
                 {
                     printf("Carving JPEG from offset %lld to %lld\n",
                            (long long)header_offset, (long long)(footer_offset + 2));
-                    if (carve(fd, header_offset, footer_offset + 2, argv[2], files_carved) < 0)
+                    if (carve(fd, header_offset, footer_offset + 2, argv[2], files_carved, "jpg") < 0)
                     {
                         free(buffer);
                         close(fd);
@@ -151,9 +203,9 @@ int main (int argc, char *argv[])
             }
         }
 
-        if (bytes_read <= 3)
+        if (bytes_read < OVERLAP)
             break;
-        pos += bytes_read - 3;
+        pos += bytes_read - (OVERLAP - 1);
     }
 
     int rc = 0;
