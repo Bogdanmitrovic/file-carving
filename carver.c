@@ -1,13 +1,19 @@
+#define _FILE_OFFSET_BITS 64
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/types.h>
+
+#define CHUNK_SIZE 4096
 
 const unsigned char HEADER[] = {0xFF, 0xD8, 0xFF};  // JPEG start
 const unsigned char FOOTER[] = {0xFF, 0xD9};        // JPEG end
 long files_carved = 0;
 
-static long carve(FILE *input_file, long start, long end, const char *out_dir, long index)
+static off_t carve(int fd, off_t start, off_t end, const char *out_dir, long index)
 {
     char output_filename[256];
     snprintf(output_filename, sizeof(output_filename), "%s/carved_%ld.jpg", out_dir, index);
@@ -18,25 +24,24 @@ static long carve(FILE *input_file, long start, long end, const char *out_dir, l
         return -1;
     }
 
-    long bytes_to_read = end - start;
+    off_t bytes_to_read = end - start;
     unsigned char copy_buffer[4096];
-    long bytes_copied = 0;
-
-    fseek(input_file, start, SEEK_SET);
+    off_t bytes_copied = 0;
 
     while (bytes_copied < bytes_to_read) {
         size_t chunk = sizeof(copy_buffer);
-        if (bytes_to_read - bytes_copied < (long)chunk) {
-            chunk = bytes_to_read - bytes_copied;
+        if (bytes_to_read - bytes_copied < (off_t)chunk) {
+            chunk = (size_t)(bytes_to_read - bytes_copied);
         }
-        size_t got = fread(copy_buffer, 1, chunk, input_file);
-        if (got == 0)
+        ssize_t got = pread(fd, copy_buffer, chunk, start + bytes_copied);
+        if (got <= 0)
         {
-            fprintf(stderr, "Read failed at offset %ld while carving %s\n",
-                    start + bytes_copied, output_filename);
+            if (got < 0) perror("pread");
+            fprintf(stderr, "Read failed at offset %lld while carving %s\n",
+                    (long long)(start + bytes_copied), output_filename);
             break;
         }
-        if (fwrite(copy_buffer, 1, got, output_file) != got)
+        if (fwrite(copy_buffer, 1, (size_t)got, output_file) != (size_t)got)
         {
             perror(output_filename);
             break;
@@ -46,9 +51,9 @@ static long carve(FILE *input_file, long start, long end, const char *out_dir, l
     if (fclose(output_file) != 0)
         perror(output_filename);
     if (bytes_copied < bytes_to_read)
-        fprintf(stderr, "Warning: %s is incomplete (%ld of %ld bytes)\n",
-                output_filename, bytes_copied, bytes_to_read);
-    printf("Carved %ld bytes to %s\n", bytes_copied, output_filename);
+        fprintf(stderr, "Warning: %s is incomplete (%lld of %lld bytes)\n",
+                output_filename, (long long)bytes_copied, (long long)bytes_to_read);
+    printf("Carved %lld bytes to %s\n", (long long)bytes_copied, output_filename);
     return bytes_copied;
 }
 
@@ -64,60 +69,68 @@ int main (int argc, char *argv[])
         printf("Usage: (sudo) %s <input_device_path> <output_directory>\n", argv[0]);
         return 1;
     }
-    FILE* input_file = fopen(argv[1], "rb");
-    if (!input_file)
+    int fd = open(argv[1], O_RDONLY);
+    if (fd < 0)
     {
         perror("Error opening input device");
         return 1;
     }
 
-    unsigned char* buffer = malloc(4096);
+    unsigned char* buffer = malloc(CHUNK_SIZE);
     if (!buffer)
     {
         perror("Error allocating buffer");
-        fclose(input_file);
+        close(fd);
         return 1;
     }
-    unsigned long bytes_read;
-    long header_offset = -1;
+    ssize_t bytes_read;
+    off_t pos = 0;
+    off_t header_offset = -1;
 
-    while ((bytes_read = fread(buffer, sizeof(char), 4096, input_file)) > 0)
+    while ((bytes_read = pread(fd, buffer, CHUNK_SIZE, pos)) > 0)
     {
-        long chunk_start = ftell(input_file) - (long)bytes_read;
+        off_t chunk_start = pos;
 
-        for (size_t i = 0; i + 3 < bytes_read; i++)
+        for (ssize_t i = 0; i + 3 < bytes_read; i++)
         {
             if (memcmp(&buffer[i], HEADER, 3) == 0 && has_jpeg_marker(buffer[i + 3]))
             {
-                header_offset = chunk_start + (long)i;
-                printf("Found JPEG header at offset: %ld\n", header_offset);
+                header_offset = chunk_start + i;
+                printf("Found JPEG header at offset: %lld\n", (long long)header_offset);
             }
             else if (memcmp(&buffer[i], FOOTER, 2) == 0)
             {
-                long footer_offset = chunk_start + (long)i;
+                off_t footer_offset = chunk_start + i;
 
                 if (header_offset != -1 && footer_offset > header_offset)
                 {
-                    printf("Carving JPEG from offset %ld to %ld\n", header_offset, footer_offset + 2);
-                    if (carve(input_file, header_offset, footer_offset + 2, argv[2], files_carved) < 0)
+                    printf("Carving JPEG from offset %lld to %lld\n",
+                           (long long)header_offset, (long long)(footer_offset + 2));
+                    if (carve(fd, header_offset, footer_offset + 2, argv[2], files_carved) < 0)
                     {
                         free(buffer);
-                        fclose(input_file);
+                        close(fd);
                         return 1;
                     }
                     files_carved++;
                     header_offset = -1;
-                    fseek(input_file, chunk_start + (long)bytes_read, SEEK_SET);
                 }
             }
         }
 
         if (bytes_read <= 3)
             break;
-        fseek(input_file, chunk_start + (long)bytes_read - 3, SEEK_SET);
+        pos += bytes_read - 3;
+    }
+
+    int rc = 0;
+    if (bytes_read < 0)
+    {
+        perror("Error reading input");
+        rc = 1;
     }
 
     free(buffer);
-    fclose(input_file);
-    return 0;
+    close(fd);
+    return rc;
 }
