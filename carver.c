@@ -13,6 +13,28 @@ const unsigned char HEADER[] = {0xFF, 0xD8, 0xFF};  // JPEG start
 const unsigned char FOOTER[] = {0xFF, 0xD9};        // JPEG end
 long files_carved = 0;
 
+
+static off_t app_segments_end(int fd, off_t start)
+{
+    off_t pos = start + 2;
+    unsigned char hdr[4];
+
+    while(1)
+    {
+        if (pread(fd, hdr, 4, pos) != 4 || hdr[0] != 0xFF)
+            return -1;
+        if (hdr[1] < 0xE0 || hdr[1] > 0xEF)
+        {
+            bool plausible = hdr[1] == 0xDB || hdr[1] == 0xC4 || (hdr[1] >= 0xC0 && hdr[1] <= 0xC2);
+            return plausible ? pos : -1;
+        }
+        unsigned len = ((unsigned)hdr[2] << 8) | hdr[3];
+        if (len < 2)
+            return -1;
+        pos += 2 + (off_t)len;
+    }
+}
+
 static off_t carve(int fd, off_t start, off_t end, const char *out_dir, long index)
 {
     char output_filename[256];
@@ -86,6 +108,7 @@ int main (int argc, char *argv[])
     ssize_t bytes_read;
     off_t pos = 0;
     off_t header_offset = -1;
+    off_t skip_until = 0;
 
     while ((bytes_read = pread(fd, buffer, CHUNK_SIZE, pos)) > 0)
     {
@@ -93,14 +116,24 @@ int main (int argc, char *argv[])
 
         for (ssize_t i = 0; i + 3 < bytes_read; i++)
         {
+            off_t abs_pos = chunk_start + i;
+            if (abs_pos < skip_until)
+                continue;
             if (memcmp(&buffer[i], HEADER, 3) == 0 && has_jpeg_marker(buffer[i + 3]))
             {
-                header_offset = chunk_start + i;
+                off_t app_end = app_segments_end(fd, abs_pos);
+                if (app_end < 0)
+                {
+                    printf("Ignoring header at %lld (unexpected structure)\n", (long long)abs_pos);
+                    continue;
+                }
+                header_offset = abs_pos;
+                skip_until = app_end;
                 printf("Found JPEG header at offset: %lld\n", (long long)header_offset);
             }
             else if (memcmp(&buffer[i], FOOTER, 2) == 0)
             {
-                off_t footer_offset = chunk_start + i;
+                off_t footer_offset = abs_pos;
 
                 if (header_offset != -1 && footer_offset > header_offset)
                 {
