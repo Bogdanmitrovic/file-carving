@@ -7,6 +7,51 @@ const unsigned char HEADER[] = {0xFF, 0xD8, 0xFF};  // JPEG start
 const unsigned char FOOTER[] = {0xFF, 0xD9};        // JPEG end
 long files_carved = 0;
 
+static long carve(FILE *input_file, long start, long end, const char *out_dir, long index)
+{
+    char output_filename[256];
+    snprintf(output_filename, sizeof(output_filename), "%s/carved_%ld.jpg", out_dir, index);
+    FILE* output_file = fopen(output_filename, "wb");
+    if (!output_file)
+    {
+        perror(output_filename);
+        return -1;
+    }
+
+    long bytes_to_read = end - start;
+    unsigned char copy_buffer[4096];
+    long bytes_copied = 0;
+
+    fseek(input_file, start, SEEK_SET);
+
+    while (bytes_copied < bytes_to_read) {
+        size_t chunk = sizeof(copy_buffer);
+        if (bytes_to_read - bytes_copied < (long)chunk) {
+            chunk = bytes_to_read - bytes_copied;
+        }
+        size_t got = fread(copy_buffer, 1, chunk, input_file);
+        if (got == 0)
+        {
+            fprintf(stderr, "Read failed at offset %ld while carving %s\n",
+                    start + bytes_copied, output_filename);
+            break;
+        }
+        if (fwrite(copy_buffer, 1, got, output_file) != got)
+        {
+            perror(output_filename);
+            break;
+        }
+        bytes_copied += got;
+    }
+    if (fclose(output_file) != 0)
+        perror(output_filename);
+    if (bytes_copied < bytes_to_read)
+        fprintf(stderr, "Warning: %s is incomplete (%ld of %ld bytes)\n",
+                output_filename, bytes_copied, bytes_to_read);
+    printf("Carved %ld bytes to %s\n", bytes_copied, output_filename);
+    return bytes_copied;
+}
+
 bool has_jpeg_marker(unsigned char next_byte)
 {
     return next_byte >= 0xE0 && next_byte <= 0xEF;
@@ -54,50 +99,13 @@ int main (int argc, char *argv[])
                 if (header_offset != -1 && footer_offset > header_offset)
                 {
                     printf("Carving JPEG from offset %ld to %ld\n", header_offset, footer_offset + 2);
-                    char output_filename[256];
-                    snprintf(output_filename, sizeof(output_filename), "%s/carved_%ld.jpg", argv[2], files_carved++);
-                    FILE* output_file = fopen(output_filename, "wb");
-
-                    if (!output_file)
+                    if (carve(input_file, header_offset, footer_offset + 2, argv[2], files_carved) < 0)
                     {
-                        perror(output_filename);
                         free(buffer);
                         fclose(input_file);
                         return 1;
                     }
-
-                    long bytes_to_read = (footer_offset + 2) - header_offset;
-                    unsigned char copy_buffer[4096];
-                    long bytes_copied = 0;
-
-                    fseek(input_file, header_offset, SEEK_SET);
-
-                    while (bytes_copied < bytes_to_read) {
-                        size_t chunk = sizeof(copy_buffer);
-                        if (bytes_to_read - bytes_copied < (long)chunk) {
-                            chunk = bytes_to_read - bytes_copied;
-                        }
-                        size_t got = fread(copy_buffer, 1, chunk, input_file);
-                        if (got == 0)
-                        {
-                            fprintf(stderr, "Read failed at offset %ld while carving %s\n",
-                                    header_offset + bytes_copied, output_filename);
-                            break;
-                        }
-                        if (fwrite(copy_buffer, 1, got, output_file) != got)
-                        {
-                            perror(output_filename);
-                            break;
-                        }
-                        bytes_copied += got;
-                    }
-                    if (fclose(output_file) != 0)
-                        perror(output_filename);
-                    if (bytes_copied < bytes_to_read)
-                        fprintf(stderr, "Warning: %s is incomplete (%ld of %ld bytes)\n",
-                                output_filename, bytes_copied, bytes_to_read);
-                    printf("Carved %ld bytes to %s\n", bytes_copied, output_filename);
-
+                    files_carved++;
                     header_offset = -1;
                     fseek(input_file, chunk_start + (long)bytes_read, SEEK_SET);
                 }
